@@ -4,6 +4,9 @@
   "version": "0.0.1",
   "description": "Generate images from Dockerfiles",
   "main": "lib/index.js",
+  "bin": {
+    "docker2image": "lib/cli.js"
+  },
   "scripts": {
     "test": "c8 --reporter lcov --reporter html --reporter text --all mocha",
     "eslint": "eslint ."
