@@ -1,0 +1,215 @@
+import fs from "fs";
+import loopdev from "loopdev";
+import tar from "./lib/tar.js";
+import filesystem from "./lib/filesystem.js";
+import path from "path";
+import mountLib from "./lib/mount.js";
+import blockdev from "linux-blockdev";
+import chrootLib from "./lib/chroot.js";
+import assert from "assert";
+
+const readJobs = async ({
+  filename
+}) => {
+  const raw = await fs.promises.readFile(filename, "utf8");
+  return JSON.parse(raw);
+};
+
+const copyToImage = async ({
+  targetImage,
+  jobs,
+  tarFile
+}) => {
+  const rootDir = "/tmp/work";
+  await fs.promises.mkdir(rootDir, {
+    "recursive": true
+  });
+
+  console.log(`extract tar file ${tarFile} to ${rootDir}`);
+
+  await tar.extractTarFileTo({
+    tarFile,
+    rootDir
+  });
+
+  const copyOrder = mountLib.findMountSequence({ "kernelDeviceMounts": jobs.partitions }).reverse();
+
+  for (const part of copyOrder) {
+    console.log(`creating loop device for ${path}, offset=${part.start}, end=${part.end}`);
+    const loopDevice = await loopdev.createFromPath({
+      "path": targetImage,
+      "offset": part.start,
+      "sizelimit": part.end - part.start
+    });
+    const blockDevice = loopDevice.devicePath;
+    console.log(`created loop device ${blockDevice}`);
+
+    try {
+      console.log(`creating and propagating ${part.fsType} filesystem from ${path.resolve(`${rootDir}${part.rootDir}`)}`);
+      await filesystem.createAndPropagateFilesystem({
+        blockDevice,
+        "fsType": part.fsType,
+        "sourceDirectory": path.resolve(`${rootDir}${part.rootDir}`)
+      });
+    } finally {
+      await loopDevice.close();
+    }
+  }
+};
+
+const findKernelDevices = async ({
+  blockDevice,
+  jobs
+}) => {
+  let kernelDeviceMounts = [];
+
+  for (const partition of jobs.partitions) {
+    const length = partition.end - partition.start + 1;
+
+    const corrBlockDevice = blockDevice.partitions.find((partitionBlockDevice) => {
+      console.log("partitionBlockDevice =", partitionBlockDevice, "partition =", partition, "length =", length);
+      return partitionBlockDevice.startInBytes === partition.start
+      && partitionBlockDevice.sizeInBytes === length;
+    });
+
+    if (!corrBlockDevice) {
+      throw new Error("corresponding block device could not be resolved");
+    }
+
+    const devicePath = `/dev/${corrBlockDevice.name}`;
+
+    kernelDeviceMounts = [
+      ...kernelDeviceMounts,
+      {
+        "rootDir": partition.rootDir,
+        devicePath,
+        "PARTUUID": corrBlockDevice.PARTUUID,
+        "config": partition
+      }
+    ];
+  }
+
+  return kernelDeviceMounts;
+};
+
+const executeImageSetup = async ({
+  targetImage,
+  jobs
+}) => {
+  console.log("executing image setup, e.g. installing / configuring bootloader");
+
+  const loopDevice = await loopdev.createFromPath({
+    "path": targetImage,
+    "partscan": true
+  });
+
+  console.log(`created loop device ${loopDevice.devicePath} for whole image ${targetImage}`);
+
+  const blockDevice = await blockdev.findByName({
+    "deviceName": loopDevice.deviceName,
+    "probe": true
+  });
+
+  const kernelDeviceMounts = await findKernelDevices({
+    blockDevice,
+    jobs
+  });
+  console.log(`kernel mounts are`, JSON.stringify(kernelDeviceMounts, null, 2));
+
+  const mountJobs = await mountLib.findMountSequence({
+    kernelDeviceMounts
+  });
+  console.log(`ordered mount jobs are ${JSON.stringify(mountJobs, null, 2)}`);
+
+  let fstabLines = [];
+
+  for (const mountJob of mountJobs) {
+    console.log(`mounting ${mountJob.devicePath} to ${mountJob.rootDir}`);
+
+    await mountLib.mount({
+      "blockDevice": mountJob.devicePath,
+      // TODO: ugly
+      "mountPath": `/mnt${mountJob.rootDir}`
+    });
+
+    if(mountJob.config.fstab) {
+      console.log(`fstab enabled for ${JSON.stringify(mountJob.config)}`);
+
+      assert.equal(typeof mountJob.PARTUUID, "string");
+
+      let fstabType;
+
+      if(mountJob.config.fsType === "fat32") {
+        fstabType = "vfat";
+      } else {
+        fstabType = mountJob.config.fsType;
+      }
+
+      assert(typeof fstabType, "string");
+
+      const fstabFields = [
+        `PARTUUID="${mountJob.PARTUUID.toLowerCase()}"`,
+        mountJob.rootDir,
+        fstabType,
+        mountJob.config.fstab?.options || "default",
+        mountJob.config.fstab?.dump || 0,
+        mountJob.config.fstab?.pass || 0
+      ];
+
+      const fstabLine = fstabFields.join(" ");
+      fstabLines = [...fstabLines, fstabLine];
+    } else {
+      console.log(`fstab not enabled for ${JSON.stringify(mountJob.config)}`);
+    }
+  }
+
+  (jobs.fstab?.extra || []).forEach((fstabEntry) => {
+    assert(typeof fstabEntry.fsType, "string");
+
+    const fstabFields = [
+      fstabEntry.source || "none",
+      fstabEntry.dest,
+      fstabEntry.fsType,
+      fstabEntry.options || "defaults",
+      fstabEntry.dump || 0,
+      fstabEntry.pass || 0
+    ];
+
+    const fstabLine = fstabFields.join(" ");
+    fstabLines = [...fstabLines, fstabLine];
+  });
+
+  fstabLines = ["# Generated by docker2image", ...fstabLines, ""];
+  console.log("generated =", fstabLines.join("\n"));
+  await fs.promises.writeFile("/mnt/etc/fstab", fstabLines.join("\n"));
+
+  const chrootEnv = await chrootLib.createChrootEnvironment({ "rootDir": "/mnt" });
+
+  for (const command of (jobs.setup || [])) {
+    await chrootEnv.execute({ command });
+  }
+};
+
+process.nextTick(async () => {
+  try {
+    const targetImage = "/interface/target";
+
+    const jobs = await readJobs({
+      "filename": "/interface/jobs.json"
+    });
+
+    await copyToImage({
+      targetImage,
+      jobs,
+      "tarFile": "/interface/image.tar"
+    });
+
+    await executeImageSetup({
+      targetImage,
+      jobs
+    });
+  } catch (ex) {
+    console.error(ex);
+    process.exitCode = -1;
+  }
+});

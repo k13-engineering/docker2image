@@ -1,0 +1,42 @@
+{
+  "name": "docker2image",
+  "type": "module",
+  "version": "0.0.1",
+  "description": "Generate images from Dockerfiles",
+  "main": "lib/index.js",
+  "scripts": {
+    "test": "c8 --reporter lcov --reporter html --reporter text --all mocha",
+    "eslint": "eslint ."
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/k13-engineering/docker2image.git"
+  },
+  "keywords": [
+    "node",
+    "boilerplate"
+  ],
+  "author": "Simon Kadisch",
+  "license": "Unlicense",
+  "bugs": {
+    "url": "https://github.com/k13-engineering/docker2image/issues"
+  },
+  "homepage": "https://github.com/k13-engineering/docker2image#readme",
+  "dependencies": {
+    "linux-blockdev": "0.0.2",
+    "loopdev": "0.0.2",
+    "node-dockerfiler": "0.0.2",
+    "tar-fs": "2.1.1",
+    "tmp-promise": "^3.0.2",
+    "untar-to-memory": "^1.0.1",
+    "yargs": "^16.1.1"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.12.3",
+    "@babel/eslint-parser": "^7.12.1",
+    "@babel/plugin-syntax-top-level-await": "^7.12.1",
+    "c8": "^7.3.0",
+    "eslint": "^7.9.0",
+    "mocha": "^8.1.3"
+  }
+}
