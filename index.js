@@ -9,7 +9,8 @@ import image from "./lib/image.js";
 
 const buildImageFromTar = async ({
   targetImage,
-  tarFile
+  tarFile,
+  tmpdir
 }) => {
   const parsedConfig = await config.readFromTar({
     tarFile
@@ -18,7 +19,8 @@ const buildImageFromTar = async ({
   await image.createImage({
     targetImage,
     parsedConfig,
-    tarFile
+    tarFile,
+    tmpdir
   });
 };
 
@@ -41,7 +43,8 @@ const docker2image = async ({
     try {
       await buildImageFromTar({
         targetImage,
-        "tarFile": outputTarFile
+        "tarFile": outputTarFile,
+        "tmpdir": dir.path
       });
     } finally {
       await fs.promises.unlink(outputTarFile);
